@@ -1,0 +1,11 @@
+{
+  "name": "Mausis Tropftimer",
+  "short_name": "Tropftimer",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#2c3e50",
+  "theme_color": "#2c3e50",
+  "icons": [
+    {"src":"/static/icon-512.png","sizes":"512x512","type":"image/png"}
+  ]
+}

@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <title>Mausis Tropftimer</title>
+  <link rel="manifest" href="/static/manifest.json">
+  <meta name="theme-color" content="#2c3e50">
+  <style>
+    body { margin:0; font-family:"Segoe UI",sans-serif; display:grid;
+           grid-template-columns:2fr 1fr; height:100vh; color:white;
+           background:#2c3e50; }
+    .main { padding:20px; display:flex; flex-direction:column; align-items:center; }
+    .side { padding:20px; overflow-y:auto; }
+    h1 { margin:0; font-size:1.5em; }
+    #next-time { margin-top:5px; color:#ecf0f1; }
+    #countdown { font-size:3em; margin:10px 0; }
+    .progress { margin:10px 0; }
+    .plant { font-size:4em; margin:10px 0; }
+    .checkboxes label { display:flex; align-items:center; margin-bottom:8px; }
+    .checkboxes input { margin-right:8px; transform:scale(1.2); }
+  </style>
+</head>
+<body>
+  <div class="main">
+    <h1><span id="icon">💧</span> <span id="description">Tropfzeit</span></h1>
+    <div id="next-time">um --:--</div>
+    <div id="countdown">--:--:--</div>
+    <div class="progress" id="progress">Fortschritt: 0/0 Tropfen</div>
+    <div class="plant" id="plant">🟫</div>
+  </div>
+  <div class="side">
+    <div class="checkboxes" id="checkboxes">
+      <strong>Heute Tropfen:</strong>
+    </div>
+  </div>
+  <script>
+    let plan = [];
+    async function init() {
+      const res = await fetch('/fullplan');
+      const json = await res.json();
+      plan = json.fullplan;
+      buildCheckboxes();
+      tick(); setInterval(tick,1000);
+    }
+    function buildCheckboxes() {
+      const cont = document.getElementById('checkboxes');
+      plan.forEach(t => {
+        const id = 'cb-'+t.replace(':','');
+        const lbl = document.createElement('label');
+        lbl.innerHTML = `<input type="checkbox" id="${id}"> ${t}`;
+        cont.appendChild(lbl);
+      });
+    }
+    let notified=false;
+    async function tick() {
+      const res = await fetch('/next');
+      const j = await res.json();
+      const iconMap={'Blau':'🟦','Grün':'🟢','Rot':'🔴'};
+      document.getElementById('icon').textContent = j.time? iconMap[j.color] : '✅';
+      document.getElementById('description').textContent = j.time? `${j.color} tropfen` : 'Fertig für heute!';
+      document.getElementById('next-time').textContent = j.time? `um ${j.time}` : '';
+      let rem = j.remaining;
+      if(j.time && rem>0) {
+        const h=String(Math.floor(rem/3600)).padStart(2,'0'); rem%=3600;
+        const m=String(Math.floor(rem/60)).padStart(2,'0');
+        const s=String(rem%60).padStart(2,'0');
+        document.getElementById('countdown').textContent=`${h}:${m}:${s}`;
+      } else document.getElementById('countdown').textContent='--:--:--';
+      if(j.time && !notified && j.remaining<=0) {
+        notified=true;
+        const cb=document.getElementById('cb-'+j.time.replace(':',''));
+        if(cb) cb.checked=true;
+        if(Notification.permission==='granted') new Notification('💧 Tropfzeit!',{body:`Jetzt ${j.color} tropfen um ${j.time}`});
+        else alert(`Jetzt ${j.color} tropfen um ${j.time}`);
+      }
+      const done=document.querySelectorAll('#checkboxes input:checked').length;
+      document.getElementById('progress').textContent=`Fortschritt: ${done}/${plan.length} Tropfen`;
+      const stages=["🟫","🌱","🌿","🌳","🌼"];
+      const idx=Math.min(Math.floor(done/(plan.length/stages.length)), stages.length-1);
+      document.getElementById('plant').textContent=stages[idx];
+    }
+    if('serviceWorker' in navigator) navigator.serviceWorker.register('/static/sw.js');
+    if(Notification && Notification.permission!=='granted') Notification.requestPermission();
+    init();
+  </script>
+</body>
+</html>
