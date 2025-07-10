@@ -54,7 +54,6 @@ with st.sidebar.form('settings_form'):
             modes[color] = ('interval', interval)
     submitted = st.form_submit_button('Plan anwenden')
     if submitted:
-        # update settings
         st.session_state.settings = {
             'start_time': start_time.strftime('%H:%M'),
             'end_time': end_time.strftime('%H:%M'),
@@ -63,52 +62,59 @@ with st.sidebar.form('settings_form'):
         st.session_state.done.clear()
         st.session_state.notified.clear()
 
-# Build plan per settings
+# Build merged plan enforcing 30-min gap globally
 def build_plan(settings):
-    plan = []
+    # generate all candidate datetime entries per color
+    entries = []
     today = datetime.today()
     start_dt = datetime.combine(today, datetime.strptime(settings['start_time'], '%H:%M').time())
     end_dt   = datetime.combine(today, datetime.strptime(settings['end_time'], '%H:%M').time())
     for color, (mode, val) in settings['modes'].items():
         icon = {'Blau':'🟦','Grün':'🟢','Rot':'🔴'}[color]
-        if mode=='count':
-            if val>1:
-                step=(end_dt-start_dt)/(val-1)
-                dt_list=[start_dt+i*step for i in range(val)]
+        if mode == 'count':
+            if val > 1:
+                step = (end_dt - start_dt) / (val - 1)
+                dts = [start_dt + i * step for i in range(val)]
             else:
-                dt_list=[start_dt]
+                dts = [start_dt]
         else:
-            dt_list=[]
-            cur=start_dt
-            while cur<=end_dt:
-                dt_list.append(cur)
-                cur+=timedelta(minutes=val)
-        for dt in dt_list:
-            plan.append((dt.strftime('%H:%M'), color, icon))
-    plan.sort(key=lambda x:x[0])
+            dts = []
+            dt = start_dt
+            while dt <= end_dt:
+                dts.append(dt)
+                dt += timedelta(minutes=val)
+        for dt in dts:
+            entries.append((dt, color, icon))
+    # sort entries
+    entries.sort(key=lambda x: x[0])
+    # merge with 30-min minimum gap
+    merged = []
+    for dt, color, icon in entries:
+        if not merged or (dt - merged[-1][0]).total_seconds() >= 1800:
+            merged.append((dt, color, icon))
+    # format
+    plan = [(dt.strftime('%H:%M'), color, icon) for dt, color, icon in merged]
     return plan
 
 plan_times = build_plan(st.session_state.settings)
 
-# Determine next drop based on current time
-def get_next(plan):
-    now = datetime.now()
-    for t_str, color, icon in plan:
-        dt = datetime.strptime(t_str, '%H:%M').replace(
-            year=now.year, month=now.month, day=now.day
-        )
-        rem = int((dt - now).total_seconds())
-        if rem >= 0 and f"{color}_{t_str}" not in st.session_state.done:
-            return t_str, color, icon, rem
-    return None, None, None, 0
-
-next_t, next_color, next_icon, rem = get_next(plan_times)
+# Determine next drop
+now = datetime.now()
+next_drop = None
+for t_str, color, icon in plan_times:
+    key = f"{color}_{t_str}"
+    dt = datetime.strptime(t_str, '%H:%M').replace(year=now.year, month=now.month, day=now.day)
+    rem = int((dt - now).total_seconds())
+    if rem >= 0 and key not in st.session_state.done:
+        next_drop = (t_str, color, icon, rem)
+        break
 
 # Layout: two columns
 col1, col2 = st.columns([2, 1])
 with col1:
-    if next_t:
-        st.subheader(f"{next_icon} {next_color} tropfen um {next_t}")
+    if next_drop:
+        t_str, color, icon, rem = next_drop
+        st.subheader(f"{icon} {color} tropfen um {t_str}")
         h, r = divmod(rem, 3600)
         m, s = divmod(r, 60)
         st.markdown(f"## {h:02}:{m:02}:{s:02}")
@@ -121,17 +127,22 @@ with col1:
         checked = st.checkbox(f"{icon} {t_str}", key=key)
         if checked:
             st.session_state.done.add(key)
+    # progress and plant
     done = len(st.session_state.done)
     total = len(plan_times)
     st.write(f"Fortschritt: {done}/{total} Tropfen")
     stages = ["🟫","🌱","🌿","🌳","🌼"]
     idx = min(done * len(stages) // max(total,1), len(stages)-1)
     st.markdown(f"# {stages[idx]}")
-    if next_t and rem <= 0 and f"{next_color}_{next_t}" not in st.session_state.notified:
-        st.session_state.notified.add(f"{next_color}_{next_t}")
-        components.html(f"""
+    # notification
+    if next_drop:
+        t_str, color, icon, rem = next_drop
+        key = f"{color}_{t_str}"
+        if rem <= 0 and key not in st.session_state.notified:
+            st.session_state.notified.add(key)
+            components.html(f"""
 <script>
-  new Notification('💧 Tropfzeit!', {{ body: '{next_icon} {next_color} tropfen um {next_t}' }});
+  new Notification('💧 Tropfzeit!', {{ body: '{icon} {color} tropfen um {t_str}' }});
 </script>
 """, height=0)
 with col2:
