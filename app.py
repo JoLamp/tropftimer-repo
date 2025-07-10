@@ -2,14 +2,14 @@ import streamlit as st
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
-# Auto-refresh the page every second via JS
+# Auto-refresh page every second
 components.html("""
 <script>
   setTimeout(() => location.reload(), 1000);
 </script>
 """, height=0)
 
-# Page configuration
+# Page config
 st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
 st.title("💧 Mausi's Tropftimer")
 
@@ -37,8 +37,10 @@ with st.sidebar.form('settings_form'):
     modes = {}
     for color, icon in [('Blau','🟦'), ('Grün','🟢'), ('Rot','🔴')]:
         st.write(f"### {icon} {color}")
+        # default index for radio
+        idx = 0 if st.session_state.settings['modes'][color][0]=='count' else 1
         mode = st.radio(
-            "Modus", ['Anzahl pro Tag', 'Intervall (Minuten)'], key=f"mode_{color}"
+            "Modus", ['Anzahl pro Tag', 'Intervall (Minuten)'], index=idx, key=f"mode_{color}"
         )
         default = st.session_state.settings['modes'][color][1]
         if mode == 'Anzahl pro Tag':
@@ -51,7 +53,8 @@ with st.sidebar.form('settings_form'):
                 'Intervall (Minuten)', min_value=1, value=default, key=f"interval_{color}"
             )
             modes[color] = ('interval', interval)
-    if st.form_submit_button('Plan anwenden'):
+    submitted = st.form_submit_button('Plan anwenden')
+    if submitted:
         st.session_state.settings = {
             'start_time': start_time.strftime('%H:%M'),
             'end_time': end_time.strftime('%H:%M'),
@@ -59,90 +62,78 @@ with st.sidebar.form('settings_form'):
         }
         st.session_state.done.clear()
         st.session_state.notified.clear()
+        st.experimental_rerun()
 
-# Build combined plan ensuring 30-min minimum gap
+# Build plan per settings
 def build_plan(settings):
-    # Generate all candidate events per color
-    entries = []
+    plan = []
     today = datetime.today()
     start_dt = datetime.combine(today, datetime.strptime(settings['start_time'], '%H:%M').time())
     end_dt   = datetime.combine(today, datetime.strptime(settings['end_time'], '%H:%M').time())
     for color, (mode, val) in settings['modes'].items():
         icon = {'Blau':'🟦','Grün':'🟢','Rot':'🔴'}[color]
-        # produce list of datetimes
-        if mode == 'count':
-            if val > 1:
-                step = (end_dt - start_dt) / (val - 1)
-                dt_list = [start_dt + i * step for i in range(val)]
+        if mode=='count':
+            if val>1:
+                step=(end_dt-start_dt)/(val-1)
+                times=[start_dt+i*step for i in range(val)]
             else:
-                dt_list = [start_dt]
-        else:  # interval mode
-            dt_list = []
-            cur = start_dt
-            while cur <= end_dt:
-                dt_list.append(cur)
-                cur += timedelta(minutes=val)
-        for dt in dt_list:
-            entries.append((dt, color, icon))
-    # sort by time
-    entries.sort(key=lambda x: x[0])
-    # enforce 30-minute minimum gap
-    filtered = []
-    for dt, color, icon in entries:
-        if not filtered or (dt - filtered[-1][0]).total_seconds() >= 1800:
-            filtered.append((dt, color, icon))
-    # convert to plan of (HH:MM, color, icon)
-    plan = [(dt.strftime('%H:%M'), color, icon) for dt, color, icon in filtered]
+                times=[start_dt]
+        else:
+            times=[]
+            cur=start_dt
+            while cur<=end_dt:
+                times.append(cur)
+                cur+=timedelta(minutes=val)
+        for dt in times:
+            plan.append((dt.strftime('%H:%M'), color, icon))
+    plan.sort(key=lambda x:x[0])
     return plan
 
 plan_times = build_plan(st.session_state.settings)
 
-# Determine next drop based on current time
-def get_next(plan):
-    now = datetime.now()
-    for t_str, color, icon in plan:
-        dt = datetime.strptime(t_str, '%H:%M').replace(
-            year=now.year, month=now.month, day=now.day
-        )
-        if dt >= now:
-            return t_str, color, icon, int((dt - now).total_seconds())
-    return None, None, None, 0
+# Find next drop
+now = datetime.now()
+next_drop=None
+for t_str, color, icon in plan_times:
+    dt=datetime.strptime(t_str,'%H:%M').replace(year=now.year,month=now.month,day=now.day)
+    rem=int((dt-now).total_seconds())
+    if rem>=0 and f"{color}_{t_str}" not in st.session_state.done:
+        next_drop=(t_str,color,icon,rem)
+        break
 
-next_t, next_color, next_icon, rem = get_next(plan_times)
-
-# Layout: two columns
-col1, col2 = st.columns([2, 1])
+col1,col2=st.columns([2,1])
 with col1:
-    # Display next drop
-    if next_t:
-        st.subheader(f"{next_icon} {next_color} tropfen um {next_t}")
-        h, rem2 = divmod(rem, 3600)
-        m, s = divmod(rem2, 60)
+    if next_drop:
+        t_str,color,icon,rem=next_drop
+        st.subheader(f"{icon} {color} tropfen um {t_str}")
+        h,rem2=divmod(rem,3600)
+        m,s=divmod(rem2,60)
         st.markdown(f"## {h:02}:{m:02}:{s:02}")
     else:
         st.subheader("✅ Fertig für heute!")
         st.markdown("## --:--:--")
-    # Checkbox list
     st.write("### Heute Tropfen")
-    for t_str, color, icon in plan_times:
-        key = f"{color}_{t_str}"
-        if st.checkbox(f"{icon} {t_str}", key=key):
+    for t_str,color,icon in plan_times:
+        key=f"{color}_{t_str}"
+        checked=st.checkbox(f"{icon} {t_str}",key=key)
+        if checked:
             st.session_state.done.add(key)
-    # Progress and plant
-    done = len(st.session_state.done)
-    total = len(plan_times)
+    done=len(st.session_state.done)
+    total=len(plan_times)
     st.write(f"Fortschritt: {done}/{total} Tropfen")
-    stages = ["🟫","🌱","🌿","🌳","🌼"]
-    idx = min(done * len(stages) // max(total,1), len(stages)-1)
+    stages=["🟫","🌱","🌿","🌳","🌼"]
+    idx=min(done*len(stages)//max(total,1),len(stages)-1)
     st.markdown(f"# {stages[idx]}")
-    # Browser notification when time arrives
-    if next_t and rem <= 0 and f"{next_color}_{next_t}" not in st.session_state.notified:
-        st.session_state.notified.add(f"{next_color}_{next_t}")
-        components.html(f"""
+    if next_drop:
+        t_str,color,icon,rem=next_drop
+        key=f"{color}_{t_str}"
+        if rem<=0 and key not in st.session_state.notified:
+            st.session_state.notified.add(key)
+            components.html(f"""
 <script>
-  new Notification('💧 Tropfzeit!', {{ body: '{next_icon} {next_color} tropfen um {next_t}' }});
+ new Notification('💧 Tropfzeit!',{{body:'{icon} {color} tropfen um {t_str}'}});
 </script>
-""", height=0)
+""",height=0)
 
 with col2:
     if st.button('Reset für heute'):
