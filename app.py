@@ -9,7 +9,7 @@ components.html("""
 </script>
 """, height=0)
 
-# Page configuration
+# Page config
 st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
 st.title("💧 Mausi's Tropftimer")
 
@@ -25,7 +25,7 @@ if 'done' not in st.session_state:
 if 'notified' not in st.session_state:
     st.session_state.notified = set()
 
-# Sidebar: Settings form
+# Sidebar: settings form
 with st.sidebar.form('settings_form'):
     st.write("## Einstellungen")
     start = st.time_input("Startzeit", datetime.strptime(st.session_state.settings['start_time'], '%H:%M').time())
@@ -50,32 +50,44 @@ with st.sidebar.form('settings_form'):
         st.session_state.done.clear()
         st.session_state.notified.clear()
 
-# Build the drop plan based on settings
+# Build drop plan enforcing 30min gap across colors
 def build_plan(settings):
-    plan = []
-    start_dt = datetime.combine(datetime.today(), datetime.strptime(settings['start_time'], '%H:%M').time())
-    end_dt = datetime.combine(datetime.today(), datetime.strptime(settings['end_time'], '%H:%M').time())
+    entries = []
+    today = datetime.today()
+    start_dt = datetime.combine(today, datetime.strptime(settings['start_time'], '%H:%M').time())
+    end_dt   = datetime.combine(today, datetime.strptime(settings['end_time'], '%H:%M').time())
+    # generate per-color times
     for color, (mode, val) in settings['modes'].items():
         icon = {'Blau':'🟦','Grün':'🟢','Rot':'🔴'}[color]
         if mode == 'count':
             interval = (end_dt - start_dt) / val
             for i in range(val):
-                t = (start_dt + i * interval).time().strftime('%H:%M')
-                plan.append((t, color, icon))
+                dt = start_dt + i * interval
+                entries.append((dt, color, icon))
         else:
-            cur = start_dt
+            dt = start_dt
             step = timedelta(minutes=val)
-            while cur <= end_dt:
-                plan.append((cur.time().strftime('%H:%M'), color, icon))
-                cur += step
-    return sorted(plan, key=lambda x: x[0])
+            while dt <= end_dt:
+                entries.append((dt, color, icon))
+                dt += step
+    # merge and enforce 30-min minimum gap
+    entries = sorted(entries, key=lambda x: x[0])
+    filtered = []
+    prev_dt = None
+    for dt, color, icon in entries:
+        if prev_dt is None or (dt - prev_dt).total_seconds() >= 30*60:
+            filtered.append((dt.strftime('%H:%M'), color, icon))
+            prev_dt = dt
+    return filtered
 
+# Build plan_times
 plan_times = build_plan(st.session_state.settings)
 now = datetime.now()
 next_drop = None
-# Determine next drop
+# determine next drop
 for t, color, icon in plan_times:
-    if (key := f"{color}_{t}") not in st.session_state.done:
+    key = f"{color}_{t}"
+    if key not in st.session_state.done:
         dt = datetime.strptime(t, '%H:%M').replace(year=now.year, month=now.month, day=now.day)
         remaining = (dt - now).total_seconds()
         if remaining >= 0:
@@ -85,7 +97,7 @@ for t, color, icon in plan_times:
 # Layout: two columns
 col1, col2 = st.columns([2,1])
 
-# Left column: status and checkboxes
+# Left: status & checkboxes
 with col1:
     if next_drop:
         t, color, icon, rem = next_drop
@@ -96,27 +108,24 @@ with col1:
     else:
         st.subheader("✅ Fertig für heute!")
         st.markdown("## --:--:--")
-
     st.write("### Heute Tropfen")
     for t, color, icon in plan_times:
         key = f"{color}_{t}"
         checked = st.checkbox(f"{icon} {t}", key=key)
         if checked:
             st.session_state.done.add(key)
-
-    # Progress and plant
+    # progress & plant
     done = len(st.session_state.done)
     total = len(plan_times)
     st.write(f"Fortschritt: {done}/{total} Tropfen")
     stages = ["🟫","🌱","🌿","🌳","🌼"]
     idx = min(done * len(stages) // total, len(stages)-1)
     st.markdown(f"# {stages[idx]}")
-
-    # Trigger browser notification at drop time
+    # notifications
     if next_drop:
         t, color, icon, rem = next_drop
         key = f"{color}_{t}"
-        if rem == 0 and key not in st.session_state.notified:
+        if rem <= 0 and key not in st.session_state.notified:
             st.session_state.notified.add(key)
             components.html(f"""
 <script>
@@ -124,7 +133,7 @@ with col1:
 </script>
 """, height=0)
 
-# Right column: reset button
+# Right: reset button
 with col2:
     if st.button('Reset für heute'):
         st.session_state.done.clear()
