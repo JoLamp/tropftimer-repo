@@ -1,45 +1,68 @@
-from flask import Flask, render_template, jsonify, request
+import streamlit as st
 from datetime import datetime
-import os
+import time
 
-app = Flask(__name__)
-
-# Dynamischer Tropfen-Zeitplan wie im Desktop-Code
-# Blau stündlich 08:00–22:00, Grün 07:30/10:30/14:30/18:30, Rot 08:30/12:30/16:30/20:30
-plan = {}
+# Tropfen-Plan: Blau stündlich, Grün/Rot feste Zeiten
+plan = []
 for h in range(8, 23):
-    plan[f"{h:02}:00"] = ("Blau", f"Blau tropfen", "#3498db")
+    plan.append((f"{h:02}:00", "Blau", "🟦"))
 for t in ["07:30", "10:30", "14:30", "18:30"]:
-    plan[t] = ("Grün", f"Grün tropfen", "#2ecc71")
+    plan.append((t, "Grün", "🟢"))
 for t in ["08:30", "12:30", "16:30", "20:30"]:
-    plan[t] = ("Rot", f"Rot tropfen", "#e74c3c")
+    plan.append((t, "Rot", "🔴"))
+plan.sort()
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+def format_countdown(seconds: int) -> str:
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:02}:{m:02}:{s:02}"
 
-@app.route('/fullplan')
-def fullplan():
-    # Liefert die geordnete Liste aller Zeiten
-    return jsonify(fullplan=sorted(plan.keys()))
+st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
+st.title("💧 Mausi's Tropftimer")
 
-@app.route('/next')
-def next_drop():
-    now = datetime.now()
-    next_time = None
-    remaining = 0
-    color = None
-    for t in sorted(plan.keys()):
-        clr, desc, hexcol = plan[t]
-        ziel = datetime.strptime(t, "%H:%M").replace(
-            year=now.year, month=now.month, day=now.day
-        )
-        if ziel >= now:
-            next_time = t
-            remaining = int((ziel - now).total_seconds())
-            color = clr
-            break
-    return jsonify(time=next_time, remaining=remaining, color=color)
+# State für abgehakte Tropfzeiten
+if "done" not in st.session_state:
+    st.session_state.done = set()
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+placeholder = st.empty()
+while True:
+    with placeholder.container():
+        now = datetime.now()
+        next_drop = None
+        for t, color, icon in plan:
+            if t not in st.session_state.done:
+                dt = datetime.strptime(t, "%H:%M").replace(
+                    year=now.year, month=now.month, day=now.day
+                )
+                if dt >= now:
+                    next_drop = (t, color, icon, int((dt - now).total_seconds()))
+                    break
+
+        cols = st.columns([2, 1])
+        with cols[0]:
+            if next_drop:
+                t, color, icon, rem = next_drop
+                st.subheader(f"{icon} {color} tropfen um {t}")
+                st.markdown(f"## {format_countdown(rem)}")
+            else:
+                st.subheader("✅ Fertig für heute!")
+                st.markdown("## --:--:--")
+
+            st.write("### Heute Tropfen")
+            for t, color, icon in plan:
+                if st.checkbox(f"{icon} {t}", key=t):
+                    st.session_state.done.add(t)
+
+            done = len(st.session_state.done)
+            total = len(plan)
+            st.write(f"Fortschritt: {done}/{total} Tropfen")
+            stages = ["🟫", "🌱", "🌿", "🌳", "🌼"]
+            idx = min(done * len(stages) // total, len(stages) - 1)
+            st.markdown(f"# {stages[idx]}")
+
+        with cols[1]:
+            if st.button("Reset für heute"):
+                st.session_state.done.clear()
+
+    time.sleep(1)
+    placeholder.empty()
