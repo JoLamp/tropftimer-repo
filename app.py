@@ -44,7 +44,7 @@ components.html("""
 
 # ============ Page Config ============
 st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
-st.title("💧 Mausi's Tropftimer")
+st.title("💧 Mausis Tropftimer")
 
 # ============ State Init ============
 if 'settings' not in st.session_state:
