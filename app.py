@@ -50,7 +50,7 @@ def send_onesignal_push(message: str):
 # ── Auto-Refresh & Page Config ────────────────────────────────────────────────
 st_autorefresh(interval=1000, key="ticker")
 st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
-st.title("💧 Mausi's Tropftimer")
+st.title("💧 Mausis Tropftimer")
 
 # ── Session State Init ────────────────────────────────────────────────────────
 if 'settings' not in st.session_state:
