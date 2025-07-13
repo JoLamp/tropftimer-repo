@@ -1,20 +1,109 @@
+import streamlit as st
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from streamlit_autorefresh import st_autorefresh
+import streamlit.components.v1 as components
+
+# 1) Autorefresh jede Sekunde
+st_autorefresh(interval=1000, key="ticker")
+
+# 2) Notification-Permission einmalig anfragen
+components.html("""
+<script>
+  if (Notification.permission !== 'granted') {
+    Notification.requestPermission();
+  }
+</script>
+""", height=0)
+
+# 3) Seiten­konfiguration
+st.set_page_config(page_title="Mausis Tropftimer", layout="wide")
+st.title("💧 Mausis Tropftimer")
+
+# 4) Session-State initialisieren
+if 'settings' not in st.session_state:
+    st.session_state.settings = {
+        'start_time': '07:30',
+        'end_time':   '22:30',
+        'modes': {
+            'Blau': ('interval', 60),
+            'Grün': ('count', 4),
+            'Rot':  ('count', 4),
+        }
+    }
+if 'done' not in st.session_state:
+    st.session_state.done = set()
+if 'notified' not in st.session_state:
+    st.session_state.notified = set()
+
+# 5) Sidebar-Formular
+with st.sidebar.form('settings_form'):
+    st.write("## Einstellungen")
+    st_time = st.time_input(
+        "Startzeit",
+        datetime.strptime(st.session_state.settings['start_time'], '%H:%M').time()
+    )
+    en_time = st.time_input(
+        "Endzeit",
+        datetime.strptime(st.session_state.settings['end_time'], '%H:%M').time()
+    )
+    new_modes = {}
+    for color, icon in [('Blau','🟦'), ('Grün','🟢'), ('Rot','🔴')]:
+        st.write(f"### {icon} {color}")
+        default_mode, default_val = st.session_state.settings['modes'][color]
+        idx = 0 if default_mode == 'count' else 1
+        mode = st.radio(
+            "Modus",
+            ['Anzahl pro Tag','Intervall (Minuten)'],
+            index=idx,
+            key=f"mode_{color}"
+        )
+        if mode == 'Anzahl pro Tag':
+            val = st.number_input(
+                'Anzahl', min_value=1, value=default_val, key=f"count_{color}"
+            )
+            new_modes[color] = ('count', val)
+        else:
+            val = st.number_input(
+                'Intervall (Minuten)', min_value=1, value=default_val, key=f"interval_{color}"
+            )
+            new_modes[color] = ('interval', val)
+    if st.form_submit_button("Plan anwenden"):
+        st.session_state.settings = {
+            'start_time': st_time.strftime('%H:%M'),
+            'end_time':   en_time.strftime('%H:%M'),
+            'modes':      new_modes
+        }
+        st.session_state.done.clear()
+        st.session_state.notified.clear()
+        st.experimental_rerun()
+
+# 6) Plan-Berechnung mit 30-Min-Abstand und Clamp für Count-Mode
 def build_plan(settings):
     tz = ZoneInfo("Europe/Berlin")
     today = datetime.now(tz).date()
-    start_dt = datetime.combine(today, datetime.strptime(settings['start_time'], '%H:%M').time(), tzinfo=tz)
-    end_dt   = datetime.combine(today, datetime.strptime(settings['end_time'],   '%H:%M').time(), tzinfo=tz)
+    start_dt = datetime.combine(today,
+        datetime.strptime(settings['start_time'], '%H:%M').time(),
+        tzinfo=tz
+    )
+    end_dt = datetime.combine(today,
+        datetime.strptime(settings['end_time'], '%H:%M').time(),
+        tzinfo=tz
+    )
 
+    # Rohliste aller Termine
     raw = []
     for color, (mode, val) in settings['modes'].items():
         icon = {'Blau':'🟦','Grün':'🟢','Rot':'🔴'}[color]
-        # GENERATE
         if mode == 'count':
+            # gleichmäßig verteilen
             if val > 1:
                 step = (end_dt - start_dt) / (val - 1)
                 times = [start_dt + i * step for i in range(val)]
             else:
                 times = [start_dt]
         else:
+            # Intervall-Modus
             times = []
             t = start_dt
             while t <= end_dt:
@@ -23,33 +112,88 @@ def build_plan(settings):
         for t in times:
             raw.append((t, color, icon))
 
-    # SORT
+    # sortieren
     raw.sort(key=lambda x: x[0])
     sched = []
 
-    # SCHEDULE with 30min GAP, but clamp count-events into window
+    # planen mit 30-Min-Gap, Clamp für Count-Mode
     for t, color, icon in raw:
         if not sched:
             sched.append((t, color, icon))
             continue
 
-        prev_t, *_ = sched[-1]
+        prev_t, _, _ = sched[-1]
         if (t - prev_t).total_seconds() >= 1800:
-            # no conflict
             sched.append((t, color, icon))
         else:
-            # conflict: shift forward
+            # Konflikt: verschieben um 30 Min
             new_t = prev_t + timedelta(minutes=30)
-            # **clamp**: if this was from a count-event (we know by mode),
-            # always include: if new_t after end, force to end_dt
-            if color in (k for k,m in settings['modes'].items() if m[0]=='count'):
+            if settings['modes'][color][0] == 'count':
+                # Clamp ans Ende
                 if new_t > end_dt:
                     new_t = end_dt
+                sched.append((new_t, color, icon))
             else:
-                # for interval-events: only include if within
-                if new_t > end_dt:
-                    continue
-            sched.append((new_t, color, icon))
+                # nur wenn noch im Fenster
+                if new_t <= end_dt:
+                    sched.append((new_t, color, icon))
 
-    # FORMAT
-    return [(t.strftime('%H:%M'), c, i) for t,c,i in sched]
+    # Format für Anzeige
+    return [(t.strftime('%H:%M'), c, i) for t, c, i in sched]
+
+plan = build_plan(st.session_state.settings)
+
+# 7) Nächste Tropfung ermitteln
+tz = ZoneInfo("Europe/Berlin")
+now = datetime.now(tz)
+next_item = None
+for t_str, color, icon in plan:
+    dt = datetime.strptime(t_str, '%H:%M').replace(
+        year=now.year, month=now.month, day=now.day, tzinfo=tz
+    )
+    rem = int((dt - now).total_seconds())
+    key = f"{color}_{t_str}"
+    if rem >= 0 and key not in st.session_state.done:
+        next_item = (t_str, color, icon, rem)
+        break
+
+# 8) Anzeige
+st.subheader("Nächste Tropfung")
+if next_item:
+    t_str, color, icon, rem = next_item
+    st.write(f"{icon} **{color}** um **{t_str}**")
+    h, r = divmod(rem, 3600); m, s = divmod(r, 60)
+    st.markdown(f"## {h:02}:{m:02}:{s:02}")
+else:
+    st.markdown("## ✅ Fertig für heute!")
+
+st.write("---")
+st.write("### Heute Tropfen")
+for t_str, color, icon in plan:
+    key = f"{color}_{t_str}"
+    if st.checkbox(f"{icon} {t_str}", key=key):
+        st.session_state.done.add(key)
+
+# 9) Fortschritt & Gamification
+done  = len(st.session_state.done)
+total = len(plan)
+st.write(f"Fortschritt: **{done}/{total} Tropfen**")
+stages = ["🟫","🌱","🌿","🌳","🌼"]
+stage_icon = stages[min(done * len(stages) // max(total,1), len(stages)-1)]
+st.markdown(f"# {stage_icon}")
+
+# 10) Notification-Trigger
+if next_item and next_item[3] <= 0:
+    notif_key = f"{next_item[1]}_{next_item[0]}"
+    if notif_key not in st.session_state.notified:
+        st.session_state.notified.add(notif_key)
+        components.html(f"""
+<script>
+  new Notification('💧 Tropfzeit!', {{ body: '{next_item[2]} {next_item[1]} tropfen um {next_item[0]}' }});
+</script>
+""", height=0)
+
+# 11) Reset-Button
+if st.button("Reset für heute"):
+    st.session_state.done.clear()
+    st.session_state.notified.clear()
