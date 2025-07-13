@@ -2,6 +2,15 @@ import streamlit as st
 from datetime import datetime, timedelta
 import streamlit.components.v1 as components
 
+# Request browser notification permission once
+components.html("""
+<script>
+  if (Notification.permission !== 'granted') {
+    Notification.requestPermission();
+  }
+</script>
+""", height=0)
+
 # Auto-refresh page every second via JS
 components.html("""
 <script>
@@ -18,7 +27,11 @@ if 'settings' not in st.session_state:
     st.session_state.settings = {
         'start_time': '07:30',
         'end_time': '22:30',
-        'modes': {'Blau': ('interval', 60), 'Grün': ('count', 4), 'Rot': ('count', 4)}
+        'modes': {
+            'Blau': ('interval', 60),
+            'Grün': ('count', 4),
+            'Rot': ('count', 4)
+        }
     }
 if 'done' not in st.session_state:
     st.session_state.done = set()
@@ -29,27 +42,39 @@ if 'notified' not in st.session_state:
 with st.sidebar.form('settings_form'):
     st.write("## Einstellungen")
     start_time = st.time_input(
-        "Startzeit", datetime.strptime(st.session_state.settings['start_time'], '%H:%M').time()
+        "Startzeit",
+        datetime.strptime(st.session_state.settings['start_time'], '%H:%M').time()
     )
     end_time = st.time_input(
-        "Endzeit", datetime.strptime(st.session_state.settings['end_time'], '%H:%M').time()
+        "Endzeit",
+        datetime.strptime(st.session_state.settings['end_time'], '%H:%M').time()
     )
     modes = {}
     for color, icon in [('Blau','🟦'), ('Grün','🟢'), ('Rot','🔴')]:
         st.write(f"### {icon} {color}")
-        idx = 0 if st.session_state.settings['modes'][color][0]=='count' else 1
+        # determine default radio index
+        idx = 0 if st.session_state.settings['modes'][color][0] == 'count' else 1
         mode = st.radio(
-            "Modus", ['Anzahl pro Tag', 'Intervall (Minuten)'], index=idx, key=f"mode_{color}"
+            "Modus",
+            ['Anzahl pro Tag', 'Intervall (Minuten)'],
+            index=idx,
+            key=f"mode_{color}"
         )
         default = st.session_state.settings['modes'][color][1]
         if mode == 'Anzahl pro Tag':
             count = st.number_input(
-                'Anzahl', min_value=1, value=default, key=f"count_{color}"
+                'Anzahl',
+                min_value=1,
+                value=default,
+                key=f"count_{color}"
             )
             modes[color] = ('count', count)
         else:
             interval = st.number_input(
-                'Intervall (Minuten)', min_value=1, value=default, key=f"interval_{color}"
+                'Intervall (Minuten)',
+                min_value=1,
+                value=default,
+                key=f"interval_{color}"
             )
             modes[color] = ('interval', interval)
     submitted = st.form_submit_button('Plan anwenden')
@@ -64,11 +89,11 @@ with st.sidebar.form('settings_form'):
 
 # Build merged plan enforcing 30-min gap globally
 def build_plan(settings):
-    # generate all candidate datetime entries per color
     entries = []
     today = datetime.today()
     start_dt = datetime.combine(today, datetime.strptime(settings['start_time'], '%H:%M').time())
     end_dt   = datetime.combine(today, datetime.strptime(settings['end_time'], '%H:%M').time())
+
     for color, (mode, val) in settings['modes'].items():
         icon = {'Blau':'🟦','Grün':'🟢','Rot':'🔴'}[color]
         if mode == 'count':
@@ -85,66 +110,77 @@ def build_plan(settings):
                 dt += timedelta(minutes=val)
         for dt in dts:
             entries.append((dt, color, icon))
-    # sort entries
+
+    # sort entries by time
     entries.sort(key=lambda x: x[0])
-    # merge with 30-min minimum gap
+
+    # merge with 30-minute minimum gap
     merged = []
     for dt, color, icon in entries:
         if not merged or (dt - merged[-1][0]).total_seconds() >= 1800:
             merged.append((dt, color, icon))
-    # format
+
+    # format for display
     plan = [(dt.strftime('%H:%M'), color, icon) for dt, color, icon in merged]
     return plan
 
 plan_times = build_plan(st.session_state.settings)
 
-# Determine next drop
-now = datetime.now()
-next_drop = None
-for t_str, color, icon in plan_times:
-    key = f"{color}_{t_str}"
-    dt = datetime.strptime(t_str, '%H:%M').replace(year=now.year, month=now.month, day=now.day)
-    rem = int((dt - now).total_seconds())
-    if rem >= 0 and key not in st.session_state.done:
-        next_drop = (t_str, color, icon, rem)
-        break
+# Determine next drop based on current time
+def get_next(plan):
+    now = datetime.now()
+    for t_str, color, icon in plan:
+        dt = datetime.strptime(t_str, '%H:%M').replace(
+            year=now.year, month=now.month, day=now.day
+        )
+        rem = int((dt - now).total_seconds())
+        key = f"{color}_{t_str}"
+        if rem >= 0 and key not in st.session_state.done:
+            return t_str, color, icon, rem
+    return None, None, None, 0
+
+next_t, next_color, next_icon, rem = get_next(plan_times)
 
 # Layout: two columns
 col1, col2 = st.columns([2, 1])
+
 with col1:
-    if next_drop:
-        t_str, color, icon, rem = next_drop
-        st.subheader(f"{icon} {color} tropfen um {t_str}")
+    # Display next drop
+    if next_t:
+        st.subheader(f"{next_icon} {next_color} tropfen um {next_t}")
         h, r = divmod(rem, 3600)
         m, s = divmod(r, 60)
         st.markdown(f"## {h:02}:{m:02}:{s:02}")
     else:
         st.subheader("✅ Fertig für heute!")
         st.markdown("## --:--:--")
+
     st.write("### Heute Tropfen")
     for t_str, color, icon in plan_times:
         key = f"{color}_{t_str}"
         checked = st.checkbox(f"{icon} {t_str}", key=key)
         if checked:
             st.session_state.done.add(key)
-    # progress and plant
+
+    # Progress and plant visual
     done = len(st.session_state.done)
     total = len(plan_times)
     st.write(f"Fortschritt: {done}/{total} Tropfen")
     stages = ["🟫","🌱","🌿","🌳","🌼"]
-    idx = min(done * len(stages) // max(total,1), len(stages)-1)
+    idx = min(done * len(stages) // max(total,1), len(stages) - 1)
     st.markdown(f"# {stages[idx]}")
-    # notification
-    if next_drop:
-        t_str, color, icon, rem = next_drop
-        key = f"{color}_{t_str}"
-        if rem <= 0 and key not in st.session_state.notified:
-            st.session_state.notified.add(key)
+
+    # Notification trigger
+    if next_t and rem <= 0:
+        notif_key = f"{next_color}_{next_t}"
+        if notif_key not in st.session_state.notified:
+            st.session_state.notified.add(notif_key)
             components.html(f"""
 <script>
-  new Notification('💧 Tropfzeit!', {{ body: '{icon} {color} tropfen um {t_str}' }});
+  new Notification('💧 Tropfzeit!', {{ body: '{next_icon} {next_color} tropfen um {next_t}' }});
 </script>
 """, height=0)
+
 with col2:
     if st.button('Reset für heute'):
         st.session_state.done.clear()
